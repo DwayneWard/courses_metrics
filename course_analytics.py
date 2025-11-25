@@ -58,6 +58,20 @@ class CourseAnalytics:
             "engagement": False,
             "priority": 60,
         },
+        "classroom": {
+            "label": "Аудиторная работа",
+            "patterns": [
+                "аудиторная работа",
+                "аудиторные работы",
+                "аудиторная",
+                "аудиторные",
+                "classroom",
+                "auditory",
+            ],
+            "role": "primary",
+            "engagement": False,
+            "priority": 65,
+        },
         "bonus": {
             "label": "Бонусная активность",
             "patterns": ["бонусная активность", "бонус", "bonus"],
@@ -464,10 +478,70 @@ class CourseAnalytics:
     def _group_columns(self, columns: List[Dict]) -> Dict[str, Dict]:
         """Группирует столбцы в активности на основе правил и названий."""
         grouped: Dict[str, Dict] = {}
+        
+        # Проверяем, нужно ли разделять активности по неделям
+        week_separation = self.config.get("week_activity_separation", False)
+        week_separation_mode = self.config.get("week_separation_mode", "numbered")  # "numbered" или "mean"
+        
+        # Создаем словарь для отслеживания текущей недели и счетчиков активностей
+        current_week = None
+        week_activity_counters = {}  # {week_name: {activity_type: counter}}
 
         for col in columns:
             rule = col.get("rule") or {}
-            activity_name = rule.get("name") or rule.get("label") or col["raw_title"]
+            raw_title = col.get("raw_title", "")
+            activity_label = col.get("activity_label", "")
+            
+            # Определяем неделю для текущего столбца
+            week_name = None
+            if raw_title and "week" in str(raw_title).lower():
+                # Если raw_title содержит "Week", это название недели
+                week_name = raw_title
+                current_week = week_name
+            elif current_week:
+                # Если есть текущая неделя, используем её
+                week_name = current_week
+            
+            # Если включено разделение по неделям и есть название недели
+            if week_separation and week_name:
+                activity_type = activity_label if activity_label else col.get("work_type", "other")
+                
+                # Определяем, нужно ли нумеровать активности или использовать среднее
+                if week_separation_mode == "mean":
+                    # Группируем все активности одного типа в неделе вместе
+                    activity_name = f"{week_name}. {activity_type}"
+                    # Инициализируем счетчик для этой недели и типа активности
+                    if week_name not in week_activity_counters:
+                        week_activity_counters[week_name] = {}
+                    if activity_type not in week_activity_counters[week_name]:
+                        week_activity_counters[week_name][activity_type] = 0
+                else:  # numbered
+                    # Создаем уникальные имена для каждой активности
+                    # Инициализируем счетчик для этой недели и типа активности
+                    if week_name not in week_activity_counters:
+                        week_activity_counters[week_name] = {}
+                    if activity_type not in week_activity_counters[week_name]:
+                        week_activity_counters[week_name][activity_type] = 0
+                    
+                    week_activity_counters[week_name][activity_type] += 1
+                    counter = week_activity_counters[week_name][activity_type]
+                    
+                    if counter == 1:
+                        activity_name = f"{week_name}. {activity_type}"
+                    else:
+                        activity_name = f"{week_name}. {activity_type} {counter}"
+                
+                # Если правило задает имя, используем его (но это переопределит логику)
+                if rule.get("name") or rule.get("label"):
+                    activity_name = rule.get("name") or rule.get("label")
+            else:
+                # Стандартная логика: используем имя из правила или raw_title
+                activity_name = rule.get("name") or rule.get("label") or col["raw_title"]
+                # Если нет правила и raw_title не содержит "Week", сбрасываем current_week
+                if not rule and raw_title and "week" not in str(raw_title).lower():
+                    # Проверяем, не является ли это началом новой недели
+                    # (если следующий столбец будет "Week N")
+                    pass  # Оставляем current_week как есть
 
             entry = grouped.setdefault(
                 activity_name,
@@ -493,6 +567,11 @@ class CourseAnalytics:
 
             if rule.get("aggregation") and entry.get("aggregation") is None:
                 entry["aggregation"] = rule["aggregation"]
+            
+            # Если режим "mean", устанавливаем агрегацию на среднее для активностей одного типа
+            if week_separation and week_separation_mode == "mean" and week_name:
+                if entry.get("aggregation") is None:
+                    entry["aggregation"] = "mean"
 
         for activity in grouped.values():
             activity["source_titles"] = list(dict.fromkeys(activity["source_titles"]))
